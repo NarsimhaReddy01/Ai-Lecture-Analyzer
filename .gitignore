@@ -1,1 +1,54 @@
-".venv/" 
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDEs & OS files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Build & Distribution ---
+build/
+dist/
+*.egg-info/
+
+# --- Logs & Temporary Files ---
+*.log
+*.tmp
+*.bak
+
+# --- Data & Models ---
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.csv
+*.parquet
+*.zip
+*.tar
+*.gz
+
+# --- Notebooks Checkpoints ---
+.ipynb_checkpoints/
+
+# --- Cache ---
+.cache/
+*.egg
+
+# --- PySpark / Databricks ---
+.metastore_db/
+spark-warehouse/
+.derby.log
+.db/
+
+# --- Jupyter ---
+.jupyter/
