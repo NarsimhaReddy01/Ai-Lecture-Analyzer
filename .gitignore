@@ -52,3 +52,4 @@ spark-warehouse/
 
 # --- Jupyter ---
 .jupyter/
+".env" 
