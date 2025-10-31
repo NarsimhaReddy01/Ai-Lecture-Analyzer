@@ -1,5 +1,6 @@
 from django.db import models
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
+
 
 class LectureVideo(models.Model):
     STATUS_CHOICES = [
@@ -8,18 +9,21 @@ class LectureVideo(models.Model):
         ('done', 'Done'),
         ('error', 'Error'),
     ]
-    
+
     TRANSCRIPTION_CHOICES = [
         ('pending', 'Pending'),
         ('done', 'Done'),
         ('error', 'Error'),
     ]
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='videos')
+    # ✅ Make user optional for now — later we’ll require authentication
+    user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE)
+
+
     title = models.CharField(max_length=255)
     s3_key = models.CharField(max_length=512, unique=True)
     s3_url = models.URLField()
-    duration = models.FloatField(null=True, blank=True)  # seconds
+    duration = models.FloatField(null=True, blank=True)  # in seconds
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     # --- Processing fields ---
@@ -27,7 +31,7 @@ class LectureVideo(models.Model):
     transcription_status = models.CharField(max_length=50, choices=TRANSCRIPTION_CHOICES, default='pending')
     transcript = models.TextField(blank=True, null=True)
     summary = models.TextField(blank=True, null=True)
-    quiz_questions = models.JSONField(blank=True, null=True)  # Use models.JSONField for cross-DB support
+    quiz_questions = models.JSONField(blank=True, null=True)  # Cross-DB compatible
 
     def __str__(self):
-        return f"{self.title} ({self.user.username})"
+        return f"{self.title} ({self.user.username if self.user else 'Anonymous'})"

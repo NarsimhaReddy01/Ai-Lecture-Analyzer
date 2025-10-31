@@ -1,32 +1,45 @@
-# backend/videos/views.py
 import boto3
 import uuid
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 from django.conf import settings
-from .models import LectureVideo
-from .tasks import process_video  # Celery task
-from .serializers import LectureVideoSerializer
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework import status
 from rest_framework.views import APIView
 
-# -------------------------
-# 1️⃣ Generate Presigned URL & Upload Video Metadata
-# -------------------------
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
+from .models import LectureVideo
+from .tasks import process_video
+from .serializers import LectureVideoSerializer
+
+
+# ==========================================================
+# 1️⃣ Generate Presigned URL & Create Video Record
+# ==========================================================
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@csrf_exempt
 def generate_presigned_url(request):
-    file_name = request.data.get('file_name')
-    file_type = request.data.get('file_type')
+    """
+    Generates an AWS S3 presigned URL for uploading a video
+    and immediately triggers Celery background processing.
+    """
+    print("🧾 Incoming data:", request.data)
+
+    file_name = request.data.get("file_name")
+    file_type = request.data.get("file_type")
 
     if not file_name or not file_type:
         return Response({"error": "file_name and file_type are required"}, status=400)
 
+    # Initialize S3 client
     s3 = boto3.client(
-        's3',
+        "s3",
         aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-        region_name=getattr(settings, 'AWS_S3_REGION_NAME', None)
+        region_name=getattr(settings, "AWS_S3_REGION_NAME", None),
     )
 
     unique_id = str(uuid.uuid4())
@@ -37,79 +50,95 @@ def generate_presigned_url(request):
         Key=key,
         Fields={"Content-Type": file_type},
         Conditions=[{"Content-Type": file_type}],
-        ExpiresIn=3600
+        ExpiresIn=3600,
     )
 
-    # Save video metadata in DB with status "pending"
+    # ✅ Safely assign user (if authenticated)
+    user = request.user if request.user.is_authenticated else None
+
+    # ✅ Create video record
     video = LectureVideo.objects.create(
-        user=request.user,
         title=file_name,
         s3_key=key,
         s3_url=f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/{key}",
-        status='pending',
-        transcription_status="pending"
+        transcription_status="pending",
+        user=user,  # <--- important line
     )
 
-    # Trigger Celery task asynchronously
+    # Trigger background task
     process_video.delay(video.id)
 
-    return Response({
-        'data': presigned_post,
-        'file_url': video.s3_url,
-        'video_id': video.id,
-        'message': "Presigned URL generated and processing started"
-    })
+    return Response(
+        {
+            "data": presigned_post,
+            "file_url": video.s3_url,
+            "video_id": video.id,
+            "message": "✅ Presigned URL generated and video processing started.",
+        },
+        status=200,
+    )
 
 
-# -------------------------
-# 2️⃣ Fetch Video Processing Results
-# -------------------------
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
+
+# ==========================================================
+# 2️⃣ Get Full Video Analysis Results
+# ==========================================================
+@api_view(["GET"])
+@permission_classes([AllowAny])
+@csrf_exempt
 def get_video_results(request, video_id):
+    """
+    Returns the transcript, summary, quiz, and status for a given video.
+    """
     try:
-        video = LectureVideo.objects.get(id=video_id, user=request.user)
+        video = LectureVideo.objects.get(id=video_id)
+        serializer = LectureVideoSerializer(video)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     except LectureVideo.DoesNotExist:
-        return Response({"error": "Video not found"}, status=404)
-
-    return Response({
-        "video_id": video.id,
-        "title": video.title,
-        "status": video.status,
-        "transcript": video.transcript or "",
-        "summary": video.summary or "",
-        "quiz": video.quiz_questions or [],
-        "s3_url": video.s3_url
-    })
+        return Response({"error": "Video not found"}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
-# -------------------------
-# 4️⃣ Check Video Status
-# -------------------------
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
+# ==========================================================
+# 3️⃣ Check Current Video Processing Status
+# ==========================================================
+@api_view(["GET"])
+@permission_classes([AllowAny])
+@csrf_exempt
 def video_status(request, video_id):
+    """
+    Returns the current processing status for a video (polled by frontend).
+    """
     try:
-        video = LectureVideo.objects.get(id=video_id, user=request.user)
-        return Response({
-            "status": video.status,
-            "transcript": video.transcript or "",
-            "summary": video.summary or "",
-            "quiz_questions": video.quiz_questions or [],
-        })
+        video = LectureVideo.objects.get(id=video_id)
+        return Response(
+            {
+                "video_id": video.id,
+                "title": video.title,
+                "status": video.transcription_status,
+                "progress": getattr(video, "progress", 0),
+                "updated_at": video.updated_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     except LectureVideo.DoesNotExist:
-        return Response({"error": "Video not found"}, status=404)
+        return Response({"error": "Video not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
-# -------------------------
-# 5️⃣ Optional: APIView for all videos
-# -------------------------
+# ==========================================================
+# 4️⃣ List All Uploaded Videos (Admin / Dashboard)
+# ==========================================================
+@method_decorator(csrf_exempt, name="dispatch")
 class VideoListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request):
-        videos = LectureVideo.objects.filter(user=request.user).order_by('-uploaded_at')
+        """
+        Returns all videos ordered by most recent upload.
+        """
+        videos = LectureVideo.objects.all().order_by("-uploaded_at")
         serializer = LectureVideoSerializer(videos, many=True)
-        return Response(serializer.data)
-
+        return Response(serializer.data, status=status.HTTP_200_OK)

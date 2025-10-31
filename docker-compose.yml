@@ -1,41 +1,89 @@
 version: "3.9"
 
 services:
+  # --------------------------------------
+  # PostgreSQL Database
+  # --------------------------------------
+  postgres_db:
+    image: postgres:15
+    container_name: ai_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: jeevic_ai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------
+  # Redis (for Celery Queue)
+  # --------------------------------------
+  redis_broker:
+    image: redis:7
+    container_name: ai_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------
+  # Django Backend (Serves React + API)
+  # --------------------------------------
   backend:
     build:
-      context: ./backend
-    container_name: backend
-    command: python manage.py runserver 0.0.0.0:8000
+      context: .
+      dockerfile: infra/Dockerfile.backend  # ✅ builds React inside Docker
+    container_name: ai_backend
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis_broker:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis_broker:6379/0
+      - DJANGO_SETTINGS_MODULE=core.settings
     volumes:
-      - ./backend:/app
+      - ./backend:/app/backend  # backend source code
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      redis_broker:
+        condition: service_healthy
     ports:
       - "8000:8000"
-    env_file:
-      - ./backend/.env
-    depends_on:
-      - db
+    command: python manage.py runserver 0.0.0.0:8000
 
-  frontend:
+  # --------------------------------------
+  # Celery Worker
+  # --------------------------------------
+  celery_worker:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
-
-  db:
-    image: postgres:15
-    container_name: postgres_db
+      context: .
+      dockerfile: infra/Dockerfile.celery
+    container_name: ai_celery
+    command: celery -A core worker --loglevel=info
+    env_file:
+      - .env
     environment:
-      POSTGRES_DB: lecturedb
-      POSTGRES_USER: lectureuser
-      POSTGRES_PASSWORD: lecturepass
-    ports:
-      - "5433:5432"
+      - CELERY_BROKER_URL=redis://redis_broker:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis_broker:6379/0
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./backend:/app
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      redis_broker:
+        condition: service_healthy
 
+# --------------------------------------
+# Persistent Volumes
+# --------------------------------------
 volumes:
-  postgres_data:
+  pgdata:
